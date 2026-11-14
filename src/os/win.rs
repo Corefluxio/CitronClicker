@@ -418,6 +418,11 @@ fn hwnd_is_mc(hwnd: HWND) -> bool {
     if pname == "minecraft.windows" || pname == "minecraft" {
         return true; // bedrock
     }
+    if pname == "applicationframehost"
+    && title_suggests_minecraft(&title)
+{
+    return true;
+}
     if pname == "java" || pname == "javaw" {
         return title_suggests_minecraft(&title);
     }
