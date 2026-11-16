@@ -307,7 +307,7 @@ struct BetterCrits {
 
 impl Default for BetterCrits {
     fn default() -> Self {
-        Self { enabled: false, delay_ms: 335.0, window_ms: 40.0, sprint_reset: false }
+        Self { enabled: false, delay_ms: 335.0, window_ms: 160.0, sprint_reset: false }
     }
 }
 
@@ -478,7 +478,7 @@ impl CitronApp {
                     hotkey_vk: 0,
                 },
                 bettercrits: engine::BetterCritsSnap {
-                    enabled: false, delay_ms: 335.0, window_ms: 40.0, sprint_reset: false,
+                    enabled: false, delay_ms: 335.0, window_ms: 160.0, sprint_reset: false,
                 },
                 audio: engine::AudioConfig {
                     enabled: true,
@@ -594,7 +594,7 @@ impl CitronApp {
         self.taskbar_key = c.taskbar_key;
         self.blockhit = c.blockhit;
         self.bettercrits = c.bettercrits;
-        self.bettercrits.window_ms = self.bettercrits.window_ms.clamp(20.0, 80.0);
+        self.bettercrits.window_ms = self.bettercrits.window_ms.clamp(80.0, 250.0);
         self.custom_wav = c.custom_wav;
         self.last_pack = self.pack;
         // reload a saved custom sound, fall back to default if it's gone/bad
@@ -1764,26 +1764,21 @@ impl CitronApp {
     fn bettercrits_tab(&mut self, ui: &mut egui::Ui) {
         let accent = self.accent;
         option_row(ui, ic::ZAP, "BetterCrits (experimental)",
-            "Passive timing assist; normal CPS never pauses", accent, |ui| {
+            "Manual Ctrl+W release + Space combo; regular CPS never pauses", accent, |ui| {
                 toggle(ui, &mut self.bettercrits.enabled, accent);
             });
         ui.add_space(12.0);
-        ui.label(semibold("Restore sprint after jump (ms)", 13.0, TXT));
+        ui.label(semibold("Timed extra click after Space (ms)", 13.0, TXT));
         ui.label(cap(&format!("{:.0} ms", self.bettercrits.delay_ms), MUT));
         single_slider(ui, &mut self.bettercrits.delay_ms, 200.0, 520.0, accent);
         ui.add_space(12.0);
-        ui.label(semibold("Stop forward movement (ms)", 13.0, TXT));
-        ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms.clamp(20.0, 80.0)), MUT));
-        single_slider(ui, &mut self.bettercrits.window_ms, 20.0, 80.0, accent);
+        ui.label(semibold("Ctrl+W / Space timing tolerance (ms)", 13.0, TXT));
+        ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms), MUT));
+        single_slider(ui, &mut self.bettercrits.window_ms, 80.0, 250.0, accent);
         ui.add_space(12.0);
-        option_row(ui, ic::ZAP, "Sprint reset (experimental)",
-            "Release Ctrl+W on jump, restore sprint later", accent, |ui| {
-                toggle(ui, &mut self.bettercrits.sprint_reset, accent);
-            });
-        ui.add_space(12.0);
-        ui.label(cap("Hold Ctrl+W, jump with Space, and hold LMB as usual.", MUT));
-        ui.label(cap("LEFT CLICK always continues at normal CPS.", MUT));
-        ui.label(cap("Sprint is restored when Ctrl+W are still held; crits are not guaranteed.", MUT));
+        ui.label(cap("Hold Ctrl+W; release them and jump with Space nearly together.", MUT));
+        ui.label(cap("Citron never controls W/Ctrl or blocks LEFT CLICK.", MUT));
+        ui.label(cap("One extra attack is attempted while falling; crits are not guaranteed.", MUT));
     }
 
     fn blockhit_tab(&mut self, ui: &mut egui::Ui) {
