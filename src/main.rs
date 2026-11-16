@@ -307,7 +307,7 @@ struct BetterCrits {
 
 impl Default for BetterCrits {
     fn default() -> Self {
-        Self { enabled: false, delay_ms: 335.0, window_ms: 180.0, sprint_reset: true }
+        Self { enabled: false, delay_ms: 335.0, window_ms: 40.0, sprint_reset: false }
     }
 }
 
@@ -478,7 +478,7 @@ impl CitronApp {
                     hotkey_vk: 0,
                 },
                 bettercrits: engine::BetterCritsSnap {
-                    enabled: false, delay_ms: 335.0, window_ms: 180.0, sprint_reset: true,
+                    enabled: false, delay_ms: 335.0, window_ms: 40.0, sprint_reset: false,
                 },
                 audio: engine::AudioConfig {
                     enabled: true,
@@ -594,6 +594,7 @@ impl CitronApp {
         self.taskbar_key = c.taskbar_key;
         self.blockhit = c.blockhit;
         self.bettercrits = c.bettercrits;
+        self.bettercrits.window_ms = self.bettercrits.window_ms.clamp(20.0, 80.0);
         self.custom_wav = c.custom_wav;
         self.last_pack = self.pack;
         // reload a saved custom sound, fall back to default if it's gone/bad
@@ -1763,7 +1764,7 @@ impl CitronApp {
     fn bettercrits_tab(&mut self, ui: &mut egui::Ui) {
         let accent = self.accent;
         option_row(ui, ic::ZAP, "BetterCrits (experimental)",
-            "One timed attack after your jump", accent, |ui| {
+            "Passive timing assist; normal CPS never pauses", accent, |ui| {
                 toggle(ui, &mut self.bettercrits.enabled, accent);
             });
         ui.add_space(12.0);
@@ -1771,18 +1772,18 @@ impl CitronApp {
         ui.label(cap(&format!("{:.0} ms", self.bettercrits.delay_ms), MUT));
         single_slider(ui, &mut self.bettercrits.delay_ms, 200.0, 520.0, accent);
         ui.add_space(12.0);
-        ui.label(semibold("Extra attack window (ms)", 13.0, TXT));
-        ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms), MUT));
-        single_slider(ui, &mut self.bettercrits.window_ms, 50.0, 300.0, accent);
+        ui.label(semibold("Sprint reset pulse (ms)", 13.0, TXT));
+        ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms.clamp(20.0, 80.0)), MUT));
+        single_slider(ui, &mut self.bettercrits.window_ms, 20.0, 80.0, accent);
         ui.add_space(12.0);
         option_row(ui, ic::ZAP, "Sprint reset (experimental)",
-            "Briefly release W before attack", accent, |ui| {
+            "Optional 20–80 ms forward reset (server-specific)", accent, |ui| {
                 toggle(ui, &mut self.bettercrits.sprint_reset, accent);
             });
         ui.add_space(12.0);
-        ui.label(cap("Hold Ctrl+W, jump with Space, then press/hold LMB.", MUT));
-        ui.label(cap("Normal left autoclicking pauses during the attempt.", MUT));
-        ui.label(cap("The game must be focused. Critical hits are not guaranteed.", MUT));
+        ui.label(cap("Hold Ctrl+W, jump with Space, and hold LMB as usual.", MUT));
+        ui.label(cap("Normal LEFT CLICK keeps running throughout the jump.", MUT));
+        ui.label(cap("No extra clicks are sent. Crits depend on falling and server rules.", MUT));
     }
 
     fn blockhit_tab(&mut self, ui: &mut egui::Ui) {
