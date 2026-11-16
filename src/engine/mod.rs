@@ -16,7 +16,6 @@ use timing::{HumanizedDelay, Rng, SmoothJitter, fixed_delays};
 pub struct EngineSignals {
     pub suspend_left: AtomicBool,
     pub suspend_right: AtomicBool,
-    pub crit_pause: AtomicBool,
     pub panic: AtomicBool,
     pub mc_focused: AtomicBool,
     pub mc_running: AtomicBool,
@@ -119,7 +118,6 @@ impl EngineHandle {
         let signals = Arc::new(EngineSignals {
             suspend_left: AtomicBool::new(false),
             suspend_right: AtomicBool::new(false),
-            crit_pause: AtomicBool::new(false),
             panic: AtomicBool::new(false),
             mc_focused: AtomicBool::new(false),
             mc_running: AtomicBool::new(false),
@@ -326,7 +324,6 @@ fn clicker_loop(
             && focus_ok
             && !gui_block
             && !suspend
-            && !(is_left && sig.crit_pause.load(Ordering::Relaxed))
             && hold;
 
         if should {
@@ -387,7 +384,7 @@ fn clicker_loop(
                 && focus_ok
                 && !gui_block
                 && !suspend
-                && !(is_left && sig.crit_pause.load(Ordering::Relaxed));
+                ;
             let phys = os::physical_button_held(is_left);
             if dbl_down && !phys {
                 os::click_up(is_left); // never leave an injected press stuck down
@@ -449,7 +446,6 @@ fn jitter_loop(is_left: bool, sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConf
             && focus_ok
             && !gui_block
             && !suspend
-            && !(is_left && sig.crit_pause.load(Ordering::Relaxed))
             && (snap.afk || trigger_held(&snap));
         if active {
             if let Some((dx, dy)) = jit.next(snap.jitter_intensity, &mut rng) {
