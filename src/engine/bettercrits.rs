@@ -1,6 +1,7 @@
-//! Experimental external critical-hit assist for Minecraft Bedrock.
-//! Never attacks on its own: requires Ctrl+W, a fresh Space press, and a physical LMB request.
-//! Timing is approximate because the client cannot read the player's vertical velocity.
+//! Experimental passive BetterCrits assistant for Minecraft Bedrock.
+//! IMPORTANT: never captures, delays, or synthesizes mouse attacks.
+//! The regular LEFT CLICK engine keeps running at its chosen CPS while jumping.
+//! This only schedules an optional short sprint-reset pulse near a guessed falling phase.
 
 use super::{EngineConfig, EngineSignals};
 use crate::os;
@@ -9,78 +10,70 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn release(sig: &EngineSignals) {
-    os::set_crit_capture(false);
-    sig.crit_pause.store(false, Ordering::Relaxed);
-}
-
 pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
     let mut space_was = true;
-    let mut armed: Option<Instant> = None;
-    let mut attack_requested = false;
+    let mut press_was = true;
+    let mut jump_at: Option<Instant> = None;
+    let mut attacking = false;
+    let mut last_click_seq = sig.left_click_seq.load(Ordering::Relaxed);
 
     while sig.running.load(Ordering::Relaxed) {
         let bc = { cfg.lock().unwrap().bettercrits.clone() };
-        // Never intercept clicks outside the game or in its menus.
+        let focused = os::is_minecraft_active() && !os::cursor_visible();
         let allowed = bc.enabled
             && !sig.panic.load(Ordering::Relaxed)
             && !sig.capturing.load(Ordering::Relaxed)
-            && os::is_minecraft_active()
-            && !os::cursor_visible();
+            && focused;
 
         if !allowed {
-            if armed.take().is_some() {
-                release(&sig);
-            }
+            jump_at = None;
+            attacking = false;
             space_was = os::key_held(0x20);
+            press_was = os::physical_button_held(true);
+            last_click_seq = sig.left_click_seq.load(Ordering::Relaxed);
             thread::sleep(Duration::from_millis(8));
             continue;
         }
 
         let space = os::key_held(0x20);
-        if space && !space_was && os::key_held(0x57) && os::key_held(0x11) {
-            // One attempt per fresh jump. Ctrl+W may remain physically held throughout.
-            armed = Some(Instant::now());
-            attack_requested = os::physical_button_held(true);
-            sig.crit_pause.store(true, Ordering::Relaxed);
-            os::set_crit_capture(true);
-            os::click_up(true); // stop any ongoing auto-click press
+        let phys_lmb = os::physical_button_held(true);
+        let current_seq = sig.left_click_seq.load(Ordering::Relaxed);
+        if space && !space_was && os::key_held(0x57) {
+            // Fresh jump with forward movement. No change to the clicker state.
+            jump_at = Some(Instant::now());
+            attacking = phys_lmb;
         }
         space_was = space;
 
-        if let Some(start) = armed {
-            attack_requested |= os::take_crit_request();
-            let elapsed = start.elapsed();
-            let delay = Duration::from_millis(bc.delay_ms.clamp(200.0, 520.0) as u64);
-            let end = delay + Duration::from_millis(bc.window_ms.clamp(50.0, 300.0) as u64);
+        if jump_at.is_some() {
+            attacking |= phys_lmb || (!press_was && phys_lmb) || current_seq != last_click_seq;
+        }
+        press_was = phys_lmb;
+        last_click_seq = current_seq;
 
-            if elapsed >= delay && attack_requested {
-                // Experimental sprint interruption: briefly release forward movement.
-                // The keyboard hook tracks the physical W state, ignoring injected events.
-                if bc.sprint_reset {
+        if let Some(start) = jump_at {
+            let delay = Duration::from_millis(bc.delay_ms.clamp(200.0, 520.0) as u64);
+            if start.elapsed() >= delay {
+                // Crits can work while sprinting in vanilla Bedrock; this reset is
+                // optional for servers with different timing/knockback behavior.
+                // We DO NOT pause, intercept, or add any LMB click.
+                if bc.sprint_reset
+                    && attacking
+                    && os::physical_forward_held()
+                    && os::is_minecraft_active()
+                {
                     os::key_up(0x57);
-                    thread::sleep(Duration::from_millis(45));
+                    thread::sleep(Duration::from_millis(
+                        bc.window_ms.clamp(20.0, 80.0) as u64,
+                    ));
+                    if os::physical_forward_held() && os::is_minecraft_active() {
+                        os::key_down(0x57);
+                    }
                 }
-                if os::is_minecraft_active() && !os::cursor_visible() {
-                    os::click_down(true);
-                    thread::sleep(Duration::from_millis(24));
-                    os::click_up(true);
-                }
-                if bc.sprint_reset && os::is_minecraft_active() && os::physical_forward_held() {
-                    os::key_down(0x57);
-                }
-                // Keep the normal clicker paused briefly to avoid an immediate second hit.
-                thread::sleep(Duration::from_millis(65));
-                armed = None;
-                release(&sig);
-            } else if elapsed >= end {
-                armed = None;
-                release(&sig);
+                jump_at = None;
+                attacking = false;
             }
         }
-
         thread::sleep(Duration::from_millis(3));
     }
-
-    release(&sig);
 }
