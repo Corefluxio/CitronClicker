@@ -37,6 +37,56 @@ static PHYS_LMB: AtomicBool = AtomicBool::new(false);
 static PHYS_RMB: AtomicBool = AtomicBool::new(false);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static SEND_LOCK: Mutex<()> = Mutex::new(());
+static CRIT_CAPTURE: AtomicBool = AtomicBool::new(false);
+static CRIT_REQUEST: AtomicBool = AtomicBool::new(false);
+static PHYS_W: AtomicBool = AtomicBool::new(false);
+static KEY_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_crit_capture(enabled: bool) {
+    CRIT_CAPTURE.store(enabled, Ordering::Relaxed);
+    if !enabled { CRIT_REQUEST.store(false, Ordering::Relaxed); }
+}
+pub fn take_crit_request() -> bool { CRIT_REQUEST.swap(false, Ordering::Relaxed) }
+pub fn physical_forward_held() -> bool {
+    if KEY_HOOK_INSTALLED.load(Ordering::Relaxed) {
+        PHYS_W.load(Ordering::Relaxed)
+    } else { key_held(0x57) }
+}
+
+pub fn key_down(vk: u16) { send_key(vk, false); }
+pub fn key_up(vk: u16) { send_key(vk, true); }
+fn send_key(vk: u16, up: bool) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    };
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 { ki: KEYBDINPUT {
+            wVk: vk, wScan: 0,
+            dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+            time: 0, dwExtraInfo: 0,
+        } },
+    };
+    let _g = SEND_LOCK.lock().unwrap();
+    unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32); }
+}
+
+unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        KBDLLHOOKSTRUCT, LLKHF_INJECTED, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+    if code >= 0 && lparam != 0 {
+        let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        if info.flags & LLKHF_INJECTED == 0 && info.vkCode == 0x57 {
+            match wparam as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => PHYS_W.store(true, Ordering::Relaxed),
+                WM_KEYUP | WM_SYSKEYUP => PHYS_W.store(false, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+    }
+    unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
+}
 
 pub fn begin_timer_period() {
     // 1ms timer res so sleep(1) is tight enough to only spin the last ~2ms of a cycle
@@ -59,8 +109,17 @@ unsafe extern "system" fn ll_mouse_proc(code: i32, wparam: WPARAM, lparam: LPARA
         let info = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
         if info.flags & LLMHF_INJECTED == 0 {
             match wparam as u32 {
-                WM_LBUTTONDOWN => PHYS_LMB.store(true, Ordering::Relaxed),
-                WM_LBUTTONUP => PHYS_LMB.store(false, Ordering::Relaxed),
+                WM_LBUTTONDOWN => {
+                    PHYS_LMB.store(true, Ordering::Relaxed);
+                    if CRIT_CAPTURE.load(Ordering::Relaxed) {
+                        CRIT_REQUEST.store(true, Ordering::Relaxed);
+                        return 1;
+                    }
+                },
+                WM_LBUTTONUP => {
+                    PHYS_LMB.store(false, Ordering::Relaxed);
+                    if CRIT_CAPTURE.load(Ordering::Relaxed) { return 1; }
+                },
                 WM_RBUTTONDOWN => PHYS_RMB.store(true, Ordering::Relaxed),
                 WM_RBUTTONUP => PHYS_RMB.store(false, Ordering::Relaxed),
                 _ => {}
@@ -76,6 +135,11 @@ pub fn start_input_hook() -> u32 {
     thread::spawn(move || unsafe {
         let hmod = GetModuleHandleW(ptr::null());
         let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), hmod, 0);
+        let key_hook = SetWindowsHookExW(
+            windows_sys::Win32::UI::WindowsAndMessaging::WH_KEYBOARD_LL,
+            Some(ll_keyboard_proc), hmod, 0,
+        );
+        KEY_HOOK_INSTALLED.store(!key_hook.is_null(), Ordering::Relaxed);
         let tid = GetCurrentThreadId();
         if hook.is_null() {
             let _ = tx.send(0);
@@ -90,6 +154,8 @@ pub fn start_input_hook() -> u32 {
         }
         // must unhook on the same thread that installed it
         UnhookWindowsHookEx(hook);
+        if !key_hook.is_null() { UnhookWindowsHookEx(key_hook); }
+        KEY_HOOK_INSTALLED.store(false, Ordering::Relaxed);
         HOOK_INSTALLED.store(false, Ordering::Relaxed);
     });
     rx.recv().unwrap_or(0)
