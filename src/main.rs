@@ -480,13 +480,7 @@ impl CitronApp {
                 bettercrits: engine::BetterCritsSnap {
                     enabled: false, delay_ms: 335.0, window_ms: 180.0, sprint_reset: true,
                 },
-                bettercrits: engine::BetterCritsSnap {
-                enabled: self.bettercrits.enabled,
-                delay_ms: self.bettercrits.delay_ms,
-                window_ms: self.bettercrits.window_ms,
-                sprint_reset: self.bettercrits.sprint_reset,
-            },
-            audio: engine::AudioConfig {
+                audio: engine::AudioConfig {
                     enabled: true,
                     volume: 0.70,
                     pitch_var: true,
@@ -630,6 +624,12 @@ impl CitronApp {
                 chance: self.blockhit.chance,
                 only_ingame: self.blockhit.only_ingame,
                 hotkey_vk: engine::vk_from_name(&self.blockhit.hotkey),
+            },
+            bettercrits: engine::BetterCritsSnap {
+                enabled: self.bettercrits.enabled,
+                delay_ms: self.bettercrits.delay_ms,
+                window_ms: self.bettercrits.window_ms,
+                sprint_reset: self.bettercrits.sprint_reset,
             },
             audio: engine::AudioConfig {
                 enabled: self.sounds_on,
