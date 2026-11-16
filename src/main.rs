@@ -203,6 +203,7 @@ enum Tab {
     Left,
     Right,
     BlockHit,
+    BetterCrits,
     Sounds,
     Settings,
 }
@@ -297,6 +298,20 @@ impl Default for BlockHit {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+struct BetterCrits {
+    enabled: bool,
+    delay_ms: f32,
+    window_ms: f32,
+    sprint_reset: bool,
+}
+
+impl Default for BetterCrits {
+    fn default() -> Self {
+        Self { enabled: false, delay_ms: 335.0, window_ms: 180.0, sprint_reset: true }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Config {
     left: Clicker,
     right: Clicker,
@@ -318,6 +333,8 @@ struct Config {
     taskbar_key: String,
     #[serde(default)]
     blockhit: BlockHit,
+    #[serde(default)]
+    bettercrits: BetterCrits,
     #[serde(default)]
     custom_wav: Option<std::path::PathBuf>,
 }
@@ -362,6 +379,7 @@ struct CitronApp {
     screen_hide: bool,
     taskbar_key: String,
     blockhit: BlockHit,
+    bettercrits: BetterCrits,
     screen_applied: Option<bool>,
 }
 
@@ -459,7 +477,16 @@ impl CitronApp {
                     only_ingame: true,
                     hotkey_vk: 0,
                 },
-                audio: engine::AudioConfig {
+                bettercrits: engine::BetterCritsSnap {
+                    enabled: false, delay_ms: 335.0, window_ms: 180.0, sprint_reset: true,
+                },
+                bettercrits: engine::BetterCritsSnap {
+                enabled: self.bettercrits.enabled,
+                delay_ms: self.bettercrits.delay_ms,
+                window_ms: self.bettercrits.window_ms,
+                sprint_reset: self.bettercrits.sprint_reset,
+            },
+            audio: engine::AudioConfig {
                     enabled: true,
                     volume: 0.70,
                     pitch_var: true,
@@ -510,6 +537,7 @@ impl CitronApp {
             screen_hide: false,
             taskbar_key: "Insert".into(),
             blockhit: BlockHit::default(),
+            bettercrits: BetterCrits::default(),
             screen_applied: None,
         };
         if let Some(storage) = cc.storage {
@@ -544,6 +572,7 @@ impl CitronApp {
             screen_hide: self.screen_hide,
             taskbar_key: self.taskbar_key.clone(),
             blockhit: self.blockhit.clone(),
+            bettercrits: self.bettercrits.clone(),
             custom_wav: self.custom_wav.clone(),
         }
     }
@@ -565,6 +594,7 @@ impl CitronApp {
         self.screen_hide = c.screen_hide;
         self.taskbar_key = c.taskbar_key;
         self.blockhit = c.blockhit;
+        self.bettercrits = c.bettercrits;
         self.custom_wav = c.custom_wav;
         self.last_pack = self.pack;
         // reload a saved custom sound, fall back to default if it's gone/bad
@@ -1335,6 +1365,7 @@ impl eframe::App for CitronApp {
                 Tab::Left => self.clicker_tab(ui, true),
                 Tab::Right => self.clicker_tab(ui, false),
                 Tab::BlockHit => self.blockhit_tab(ui),
+                Tab::BetterCrits => self.bettercrits_tab(ui),
                 Tab::Sounds => self.sounds_tab(ui),
                 Tab::Settings => self.settings_tab(ui),
             });
@@ -1419,6 +1450,7 @@ impl CitronApp {
             (Tab::Left, "LEFT CLICK", ic::MOUSE),
             (Tab::Right, "RIGHT CLICK", ic::MOUSE),
             (Tab::BlockHit, "BLOCKHIT", ic::SHIELD),
+            (Tab::BetterCrits, "CRITS", ic::ZAP),
             (Tab::Sounds, "SOUNDS", ic::VOLUME),
             (Tab::Settings, "SETTINGS", ic::SETTINGS),
         ];
@@ -1721,6 +1753,31 @@ impl CitronApp {
                 a.preview();
             }
         }
+    }
+
+    fn bettercrits_tab(&mut self, ui: &mut egui::Ui) {
+        let accent = self.accent;
+        option_row(ui, ic::ZAP, "BetterCrits (experimental)",
+            "One timed attack after your jump", accent, |ui| {
+                toggle(ui, &mut self.bettercrits.enabled, accent);
+            });
+        ui.add_space(12.0);
+        ui.label(semibold("Attack delay after Space (ms)", 13.0, TXT));
+        ui.label(cap(&format!("{:.0} ms", self.bettercrits.delay_ms), MUT));
+        single_slider(ui, &mut self.bettercrits.delay_ms, 200.0, 520.0, accent);
+        ui.add_space(12.0);
+        ui.label(semibold("Extra attack window (ms)", 13.0, TXT));
+        ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms), MUT));
+        single_slider(ui, &mut self.bettercrits.window_ms, 50.0, 300.0, accent);
+        ui.add_space(12.0);
+        option_row(ui, ic::ZAP, "Sprint reset (experimental)",
+            "Briefly release W before attack", accent, |ui| {
+                toggle(ui, &mut self.bettercrits.sprint_reset, accent);
+            });
+        ui.add_space(12.0);
+        ui.label(cap("Hold Ctrl+W, jump with Space, then press/hold LMB.", MUT));
+        ui.label(cap("Normal left autoclicking pauses during the attempt.", MUT));
+        ui.label(cap("The game must be focused. Critical hits are not guaranteed.", MUT));
     }
 
     fn blockhit_tab(&mut self, ui: &mut egui::Ui) {
