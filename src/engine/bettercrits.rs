@@ -1,7 +1,7 @@
-//! Experimental passive BetterCrits assistant for Minecraft Bedrock.
-//! IMPORTANT: never captures, delays, or synthesizes mouse attacks.
-//! The regular LEFT CLICK engine keeps running at its chosen CPS while jumping.
-//! This only schedules an optional short sprint-reset pulse near a guessed falling phase.
+//! Experimental critical-hit timing helper for Minecraft Bedrock.
+//! Keeps the regular LEFT CLICK autoclicker running at its chosen CPS.
+//! Temporarily interrupts Ctrl+W after a manual jump, then restores it.
+//! Timing is estimated: there is no access to actual on-ground/vertical velocity state.
 
 use super::{EngineConfig, EngineSignals};
 use crate::os;
@@ -12,10 +12,8 @@ use std::time::{Duration, Instant};
 
 pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
     let mut space_was = true;
-    let mut press_was = true;
-    let mut jump_at: Option<Instant> = None;
-    let mut attacking = false;
-    let mut last_click_seq = sig.left_click_seq.load(Ordering::Relaxed);
+    let mut reset_started_at: Option<Instant> = None;
+    let mut forward_restored = false;
 
     while sig.running.load(Ordering::Relaxed) {
         let bc = { cfg.lock().unwrap().bettercrits.clone() };
@@ -26,54 +24,55 @@ pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
             && focused;
 
         if !allowed {
-            jump_at = None;
-            attacking = false;
+            if reset_started_at.take().is_some() {
+                os::finish_sprint_interrupt(focused);
+            }
+            forward_restored = false;
             space_was = os::key_held(0x20);
-            press_was = os::physical_button_held(true);
-            last_click_seq = sig.left_click_seq.load(Ordering::Relaxed);
             thread::sleep(Duration::from_millis(8));
             continue;
         }
 
         let space = os::key_held(0x20);
-        let phys_lmb = os::physical_button_held(true);
-        let current_seq = sig.left_click_seq.load(Ordering::Relaxed);
-        if space && !space_was && os::key_held(0x57) {
-            // Fresh jump with forward movement. No change to the clicker state.
-            jump_at = Some(Instant::now());
-            attacking = phys_lmb;
+        // Start at a manual Space press while the player is actually sprinting.
+        // The clicker remains untouched. If sprint reset is OFF, this thread does
+        // nothing other than polling for the next jump.
+        if bc.sprint_reset && space && !space_was
+            && os::physical_forward_held()
+            && os::physical_ctrl_held()
+            && reset_started_at.is_none()
+        {
+            if os::start_sprint_interrupt() {
+                reset_started_at = Some(Instant::now());
+                forward_restored = false;
+            }
         }
         space_was = space;
 
-        if jump_at.is_some() {
-            attacking |= phys_lmb || (!press_was && phys_lmb) || current_seq != last_click_seq;
-        }
-        press_was = phys_lmb;
-        last_click_seq = current_seq;
-
-        if let Some(start) = jump_at {
-            let delay = Duration::from_millis(bc.delay_ms.clamp(200.0, 520.0) as u64);
-            if start.elapsed() >= delay {
-                // Crits can work while sprinting in vanilla Bedrock; this reset is
-                // optional for servers with different timing/knockback behavior.
-                // We DO NOT pause, intercept, or add any LMB click.
-                if bc.sprint_reset
-                    && attacking
-                    && os::physical_forward_held()
-                    && os::is_minecraft_active()
-                {
-                    os::key_up(0x57);
-                    thread::sleep(Duration::from_millis(
-                        bc.window_ms.clamp(20.0, 80.0) as u64,
-                    ));
-                    if os::physical_forward_held() && os::is_minecraft_active() {
-                        os::key_down(0x57);
-                    }
+        if let Some(start) = reset_started_at {
+            // Stop player movement briefly, then resume forward motion without
+            // Ctrl so the autoclicker can hit during the estimated falling phase.
+            // Finally restore sprint if the user still physically holds both.
+            let break_ms = bc.window_ms.clamp(20.0, 80.0);
+            let restore_ms = bc.delay_ms.clamp(200.0, 520.0);
+            if !forward_restored && start.elapsed() >= Duration::from_millis(break_ms as u64) {
+                if os::physical_forward_held() {
+                    os::restore_forward_after_interrupt();
                 }
-                jump_at = None;
-                attacking = false;
+                forward_restored = true;
+            }
+            if start.elapsed() >= Duration::from_millis(restore_ms as u64)
+                || !os::physical_forward_held()
+                || !os::physical_ctrl_held()
+            {
+                os::finish_sprint_interrupt(focused);
+                reset_started_at = None;
+                forward_restored = false;
             }
         }
         thread::sleep(Duration::from_millis(3));
+    }
+    if reset_started_at.is_some() {
+        os::finish_sprint_interrupt(os::is_minecraft_active());
     }
 }
