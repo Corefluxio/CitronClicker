@@ -433,7 +433,7 @@ impl CitronApp {
             max_cps: 19.0,
             cps: 16.0,
             suspend: "Mouse 5".into(),
-            hotkey: "V".into(),
+            hotkey: "None".into(),
             avoid_gui: true,
             humanize: true,
             jitter: false,
@@ -573,6 +573,11 @@ impl CitronApp {
 
     fn apply(&mut self, c: Config) {
         self.left = c.left;
+        // Migrate the previous default V toggle to disabled so browser/game typing
+        // cannot silently toggle LEFT CLICK. Users can still set a new hotkey.
+        if self.left.hotkey.eq_ignore_ascii_case("v") {
+            self.left.hotkey = "None".into();
+        }
         self.right = c.right;
         self.right_hold = c.right_hold;
         self.sounds_on = c.sounds_on;
