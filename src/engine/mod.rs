@@ -1,6 +1,7 @@
 //! background click threads; the ui pushes a config snapshot each frame.
 
 pub mod timing;
+mod bettercrits;
 
 use crate::os;
 use eframe::egui;
@@ -15,6 +16,7 @@ use timing::{HumanizedDelay, Rng, SmoothJitter, fixed_delays};
 pub struct EngineSignals {
     pub suspend_left: AtomicBool,
     pub suspend_right: AtomicBool,
+    pub crit_pause: AtomicBool,
     pub panic: AtomicBool,
     pub mc_focused: AtomicBool,
     pub mc_running: AtomicBool,
@@ -73,12 +75,21 @@ pub struct BlockHitSnap {
 }
 
 #[derive(Clone, PartialEq)]
+pub struct BetterCritsSnap {
+    pub enabled: bool,
+    pub delay_ms: f32,
+    pub window_ms: f32,
+    pub sprint_reset: bool,
+}
+
+#[derive(Clone, PartialEq)]
 pub struct EngineConfig {
     pub left: ClickerSnap,
     pub right: ClickerSnap,
     pub panic_vk: i32,
     pub taskbar_vk: i32,
     pub blockhit: BlockHitSnap,
+    pub bettercrits: BetterCritsSnap,
     pub audio: AudioConfig,
 }
 
@@ -108,6 +119,7 @@ impl EngineHandle {
         let signals = Arc::new(EngineSignals {
             suspend_left: AtomicBool::new(false),
             suspend_right: AtomicBool::new(false),
+            crit_pause: AtomicBool::new(false),
             panic: AtomicBool::new(false),
             mc_focused: AtomicBool::new(false),
             mc_running: AtomicBool::new(false),
@@ -142,6 +154,11 @@ impl EngineHandle {
             let s = signals.clone();
             let c = config.clone();
             joins.push(thread::spawn(move || blockhit_loop(s, c)));
+        }
+        {
+            let s = signals.clone();
+            let c = config.clone();
+            joins.push(thread::spawn(move || bettercrits::run(s, c)));
         }
 
         EngineHandle {
@@ -309,6 +326,7 @@ fn clicker_loop(
             && focus_ok
             && !gui_block
             && !suspend
+            && !(is_left && sig.crit_pause.load(Ordering::Relaxed))
             && hold;
 
         if should {
@@ -368,7 +386,8 @@ fn clicker_loop(
                 && !os::foreground_is_self()
                 && focus_ok
                 && !gui_block
-                && !suspend;
+                && !suspend
+                && !(is_left && sig.crit_pause.load(Ordering::Relaxed));
             let phys = os::physical_button_held(is_left);
             if dbl_down && !phys {
                 os::click_up(is_left); // never leave an injected press stuck down
@@ -430,6 +449,7 @@ fn jitter_loop(is_left: bool, sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConf
             && focus_ok
             && !gui_block
             && !suspend
+            && !(is_left && sig.crit_pause.load(Ordering::Relaxed))
             && (snap.afk || trigger_held(&snap));
         if active {
             if let Some((dx, dy)) = jit.next(snap.jitter_intensity, &mut rng) {
@@ -588,17 +608,17 @@ fn key_poll_loop(
         // flip the live config here so the clicker stops/starts instantly, without waiting on a ui
         // frame: citron is usually occluded behind the game where request_repaint may not paint, so
         // a toggle-off sometimes didn't take. the ToggleReq just syncs the ui widget.
-        edge(snap.left.hotkey_vk, &mut left_was, || {
+        edge(if sig.mc_focused.load(Ordering::Relaxed) || os::foreground_is_self() { snap.left.hotkey_vk } else { 0 }, &mut left_was, || {
             cfg.lock().unwrap().left.enabled ^= true;
             let _ = tx.send(ToggleReq::Left);
             ctx.request_repaint();
         });
-        edge(snap.right.hotkey_vk, &mut right_was, || {
+        edge(if sig.mc_focused.load(Ordering::Relaxed) || os::foreground_is_self() { snap.right.hotkey_vk } else { 0 }, &mut right_was, || {
             cfg.lock().unwrap().right.enabled ^= true;
             let _ = tx.send(ToggleReq::Right);
             ctx.request_repaint();
         });
-        edge(snap.blockhit.hotkey_vk, &mut blockhit_was, || {
+        edge(if sig.mc_focused.load(Ordering::Relaxed) || os::foreground_is_self() { snap.blockhit.hotkey_vk } else { 0 }, &mut blockhit_was, || {
             cfg.lock().unwrap().blockhit.enabled ^= true;
             let _ = tx.send(ToggleReq::BlockHit);
             ctx.request_repaint();
