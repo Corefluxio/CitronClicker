@@ -3,7 +3,7 @@
 
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -37,83 +37,25 @@ static PHYS_LMB: AtomicBool = AtomicBool::new(false);
 static PHYS_RMB: AtomicBool = AtomicBool::new(false);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static SEND_LOCK: Mutex<()> = Mutex::new(());
-static CRIT_CAPTURE: AtomicBool = AtomicBool::new(false);
-static CRIT_REQUEST: AtomicBool = AtomicBool::new(false);
 static PHYS_W: AtomicBool = AtomicBool::new(false);
-static KEY_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 static PHYS_CTRL: AtomicBool = AtomicBool::new(false);
-/// During a sprint reset, block repeated physical Ctrl/W keydowns.
-static SPRINT_INTERRUPT: AtomicBool = AtomicBool::new(false);
+static PHYS_LMB_SEQ: AtomicU64 = AtomicU64::new(0);
+static KEY_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Only used while the Minecraft window is focused.
-pub fn start_sprint_interrupt() -> bool {
-    if !KEY_HOOK_INSTALLED.load(Ordering::Relaxed)
-        || !physical_forward_held()
-        || !physical_ctrl_held()
-    {
-        return false;
-    }
-    SPRINT_INTERRUPT.store(true, Ordering::Relaxed);
-    // Ctrl alone is insufficient in toggle-sprint configurations. Force a real
-    // forward release as well, held long enough for at least two game ticks.
-    key_up(0x11); // Ctrl
-    key_up(0x57); // W
-    true
-}
-
-/// Restore only forward motion while keeping sprint key released. The physical
-/// Ctrl+W remain held by the player, but their physical repeats are filtered.
-pub fn restore_forward_after_interrupt() {
-    if SPRINT_INTERRUPT.load(Ordering::Relaxed) && physical_forward_held() {
-        key_down(0x57);
-    }
-}
-
-/// Complete the reset. Never synthesize Ctrl+W into another foreground app.
-/// If focus changed, release the hook filter and let real key transitions recover.
-pub fn finish_sprint_interrupt(minecraft_focused: bool) {
-    if !SPRINT_INTERRUPT.swap(false, Ordering::Relaxed) { return; }
-    if minecraft_focused {
-        if physical_forward_held() { key_down(0x57); }
-        if physical_ctrl_held() { key_down(0x11); }
-    }
-}
-pub fn physical_ctrl_held() -> bool {
-    if KEY_HOOK_INSTALLED.load(Ordering::Relaxed) {
-        PHYS_CTRL.load(Ordering::Relaxed)
-    } else {
-        key_held(0x11)
-    }
-}
-
-
-pub fn set_crit_capture(enabled: bool) {
-    CRIT_CAPTURE.store(enabled, Ordering::Relaxed);
-    if !enabled { CRIT_REQUEST.store(false, Ordering::Relaxed); }
-}
-pub fn take_crit_request() -> bool { CRIT_REQUEST.swap(false, Ordering::Relaxed) }
+/// Observe only; never synthesize or suppress the player's Ctrl/W events.
 pub fn physical_forward_held() -> bool {
     if KEY_HOOK_INSTALLED.load(Ordering::Relaxed) {
         PHYS_W.load(Ordering::Relaxed)
     } else { key_held(0x57) }
 }
-
-pub fn key_down(vk: u16) { send_key(vk, false); }
-pub fn key_up(vk: u16) { send_key(vk, true); }
-fn send_key(vk: u16, up: bool) {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    };
-    let input = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT {
-            wVk: vk, wScan: 0,
-            dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
-            time: 0, dwExtraInfo: 0,
-        } },
-    };
-    let _g = SEND_LOCK.lock().unwrap();
-    unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32); }
+pub fn physical_ctrl_held() -> bool {
+    if KEY_HOOK_INSTALLED.load(Ordering::Relaxed) {
+        PHYS_CTRL.load(Ordering::Relaxed)
+    } else { key_held(0x11) }
+}
+/// Incremented on real LMB-down events, not on autoclicker-injected clicks.
+pub fn physical_lmb_press_seq() -> u64 {
+    PHYS_LMB_SEQ.load(Ordering::Relaxed)
 }
 
 unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -132,12 +74,6 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
                 if info.vkCode == 0x57 { PHYS_W.store(pressed, Ordering::Relaxed); }
                 if info.vkCode == 0x11 || info.vkCode == 0xA2 || info.vkCode == 0xA3 {
                     PHYS_CTRL.store(pressed, Ordering::Relaxed);
-                }
-                if SPRINT_INTERRUPT.load(Ordering::Relaxed)
-                    && (info.vkCode == 0x57 || info.vkCode == 0x11
-                        || info.vkCode == 0xA2 || info.vkCode == 0xA3)
-                {
-                    return 1; // filter physical repeats/releases during the short pulse
                 }
             }
         }
@@ -168,15 +104,9 @@ unsafe extern "system" fn ll_mouse_proc(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam as u32 {
                 WM_LBUTTONDOWN => {
                     PHYS_LMB.store(true, Ordering::Relaxed);
-                    if CRIT_CAPTURE.load(Ordering::Relaxed) {
-                        CRIT_REQUEST.store(true, Ordering::Relaxed);
-                        return 1;
-                    }
+                    PHYS_LMB_SEQ.fetch_add(1, Ordering::Relaxed);
                 },
-                WM_LBUTTONUP => {
-                    PHYS_LMB.store(false, Ordering::Relaxed);
-                    if CRIT_CAPTURE.load(Ordering::Relaxed) { return 1; }
-                },
+                WM_LBUTTONUP => PHYS_LMB.store(false, Ordering::Relaxed),
                 WM_RBUTTONDOWN => PHYS_RMB.store(true, Ordering::Relaxed),
                 WM_RBUTTONUP => PHYS_RMB.store(false, Ordering::Relaxed),
                 _ => {}
@@ -215,7 +145,6 @@ pub fn start_input_hook() -> u32 {
         }
         // must unhook on the same thread that installed it
         UnhookWindowsHookEx(hook);
-        SPRINT_INTERRUPT.store(false, Ordering::Relaxed);
         if !key_hook.is_null() { UnhookWindowsHookEx(key_hook); }
         KEY_HOOK_INSTALLED.store(false, Ordering::Relaxed);
         HOOK_INSTALLED.store(false, Ordering::Relaxed);
@@ -265,6 +194,16 @@ fn send_mouse(flags: u32, dx: i32, dy: i32) {
     unsafe {
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
+}
+
+/// One additional click near the estimated falling phase.
+/// Never consumes real input or stops the regular left clicker.
+pub fn timed_crit_tap() {
+    send_mouse(MOUSEEVENTF_LEFTUP, 0, 0);
+    thread::sleep(std::time::Duration::from_millis(7));
+    send_mouse(MOUSEEVENTF_LEFTDOWN, 0, 0);
+    thread::sleep(std::time::Duration::from_millis(14));
+    send_mouse(MOUSEEVENTF_LEFTUP, 0, 0);
 }
 
 pub fn click_down(is_left: bool) {
