@@ -1768,22 +1768,22 @@ impl CitronApp {
                 toggle(ui, &mut self.bettercrits.enabled, accent);
             });
         ui.add_space(12.0);
-        ui.label(semibold("Attack delay after Space (ms)", 13.0, TXT));
+        ui.label(semibold("Restore sprint after jump (ms)", 13.0, TXT));
         ui.label(cap(&format!("{:.0} ms", self.bettercrits.delay_ms), MUT));
         single_slider(ui, &mut self.bettercrits.delay_ms, 200.0, 520.0, accent);
         ui.add_space(12.0);
-        ui.label(semibold("Sprint reset pulse (ms)", 13.0, TXT));
+        ui.label(semibold("Stop forward movement (ms)", 13.0, TXT));
         ui.label(cap(&format!("{:.0} ms", self.bettercrits.window_ms.clamp(20.0, 80.0)), MUT));
         single_slider(ui, &mut self.bettercrits.window_ms, 20.0, 80.0, accent);
         ui.add_space(12.0);
         option_row(ui, ic::ZAP, "Sprint reset (experimental)",
-            "Optional 20–80 ms forward reset (server-specific)", accent, |ui| {
+            "Release Ctrl+W on jump, restore sprint later", accent, |ui| {
                 toggle(ui, &mut self.bettercrits.sprint_reset, accent);
             });
         ui.add_space(12.0);
         ui.label(cap("Hold Ctrl+W, jump with Space, and hold LMB as usual.", MUT));
-        ui.label(cap("Normal LEFT CLICK keeps running throughout the jump.", MUT));
-        ui.label(cap("No extra clicks are sent. Crits depend on falling and server rules.", MUT));
+        ui.label(cap("LEFT CLICK always continues at normal CPS.", MUT));
+        ui.label(cap("Sprint is restored when Ctrl+W are still held; crits are not guaranteed.", MUT));
     }
 
     fn blockhit_tab(&mut self, ui: &mut egui::Ui) {
