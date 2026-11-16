@@ -18,8 +18,6 @@ pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
     let mut ctrl_recent: Option<Instant> = None;
     let mut jump: Option<(Instant, u64, u64)> = None;
     let mut click_seen = false;
-    let mut latest_click_seq = os::physical_lmb_press_seq();
-    let mut last_auto_seq = sig.left_click_seq.load(Ordering::Relaxed);
 
     while sig.running.load(Ordering::Relaxed) {
         let (bc, left_enabled) = {
@@ -43,15 +41,13 @@ pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
             w_recent = None;
             ctrl_recent = None;
             space_was = space;
-            latest_click_seq = phys_seq;
-            last_auto_seq = auto_seq;
             thread::sleep(Duration::from_millis(8));
             continue;
         }
 
         if w { w_recent = Some(Instant::now()); }
         if ctrl { ctrl_recent = Some(Instant::now()); }
-        let combo_tolerance = Duration::from_millis(160);
+        let combo_tolerance = Duration::from_millis(bc.window_ms.clamp(80.0, 250.0) as u64);
         // The user often releases W/Ctrl on the SAME moment they press Space.
         // Sample their recent hold history; do not require them to still be down.
         if space && !space_was {
@@ -82,10 +78,6 @@ pub fn run(sig: Arc<EngineSignals>, cfg: Arc<Mutex<EngineConfig>>) {
                 click_seen = false;
             }
         }
-        latest_click_seq = phys_seq;
-        last_auto_seq = auto_seq;
-        // Suppress unused variable warnings while retaining edge snapshots.
-        let _ = (latest_click_seq, last_auto_seq);
         thread::sleep(Duration::from_millis(3));
     }
 }
