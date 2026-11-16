@@ -41,6 +41,51 @@ static CRIT_CAPTURE: AtomicBool = AtomicBool::new(false);
 static CRIT_REQUEST: AtomicBool = AtomicBool::new(false);
 static PHYS_W: AtomicBool = AtomicBool::new(false);
 static KEY_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static PHYS_CTRL: AtomicBool = AtomicBool::new(false);
+/// During a sprint reset, block repeated physical Ctrl/W keydowns.
+static SPRINT_INTERRUPT: AtomicBool = AtomicBool::new(false);
+
+/// Only used while the Minecraft window is focused.
+pub fn start_sprint_interrupt() -> bool {
+    if !KEY_HOOK_INSTALLED.load(Ordering::Relaxed)
+        || !physical_forward_held()
+        || !physical_ctrl_held()
+    {
+        return false;
+    }
+    SPRINT_INTERRUPT.store(true, Ordering::Relaxed);
+    // Ctrl alone is insufficient in toggle-sprint configurations. Force a real
+    // forward release as well, held long enough for at least two game ticks.
+    key_up(0x11); // Ctrl
+    key_up(0x57); // W
+    true
+}
+
+/// Restore only forward motion while keeping sprint key released. The physical
+/// Ctrl+W remain held by the player, but their physical repeats are filtered.
+pub fn restore_forward_after_interrupt() {
+    if SPRINT_INTERRUPT.load(Ordering::Relaxed) && physical_forward_held() {
+        key_down(0x57);
+    }
+}
+
+/// Complete the reset. Never synthesize Ctrl+W into another foreground app.
+/// If focus changed, release the hook filter and let real key transitions recover.
+pub fn finish_sprint_interrupt(minecraft_focused: bool) {
+    if !SPRINT_INTERRUPT.swap(false, Ordering::Relaxed) { return; }
+    if minecraft_focused {
+        if physical_forward_held() { key_down(0x57); }
+        if physical_ctrl_held() { key_down(0x11); }
+    }
+}
+pub fn physical_ctrl_held() -> bool {
+    if KEY_HOOK_INSTALLED.load(Ordering::Relaxed) {
+        PHYS_CTRL.load(Ordering::Relaxed)
+    } else {
+        key_held(0x11)
+    }
+}
+
 
 pub fn set_crit_capture(enabled: bool) {
     CRIT_CAPTURE.store(enabled, Ordering::Relaxed);
@@ -77,11 +122,23 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
     };
     if code >= 0 && lparam != 0 {
         let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        if info.flags & LLKHF_INJECTED == 0 && info.vkCode == 0x57 {
-            match wparam as u32 {
-                WM_KEYDOWN | WM_SYSKEYDOWN => PHYS_W.store(true, Ordering::Relaxed),
-                WM_KEYUP | WM_SYSKEYUP => PHYS_W.store(false, Ordering::Relaxed),
-                _ => {}
+        if info.flags & LLKHF_INJECTED == 0 {
+            let pressed = match wparam as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => Some(true),
+                WM_KEYUP | WM_SYSKEYUP => Some(false),
+                _ => None,
+            };
+            if let Some(pressed) = pressed {
+                if info.vkCode == 0x57 { PHYS_W.store(pressed, Ordering::Relaxed); }
+                if info.vkCode == 0x11 || info.vkCode == 0xA2 || info.vkCode == 0xA3 {
+                    PHYS_CTRL.store(pressed, Ordering::Relaxed);
+                }
+                if SPRINT_INTERRUPT.load(Ordering::Relaxed)
+                    && (info.vkCode == 0x57 || info.vkCode == 0x11
+                        || info.vkCode == 0xA2 || info.vkCode == 0xA3)
+                {
+                    return 1; // filter physical repeats/releases during the short pulse
+                }
             }
         }
     }
@@ -139,6 +196,10 @@ pub fn start_input_hook() -> u32 {
             windows_sys::Win32::UI::WindowsAndMessaging::WH_KEYBOARD_LL,
             Some(ll_keyboard_proc), hmod, 0,
         );
+        if !key_hook.is_null() {
+            PHYS_W.store((GetAsyncKeyState(0x57) as u16 & 0x8000) != 0, Ordering::Relaxed);
+            PHYS_CTRL.store((GetAsyncKeyState(0x11) as u16 & 0x8000) != 0, Ordering::Relaxed);
+        }
         KEY_HOOK_INSTALLED.store(!key_hook.is_null(), Ordering::Relaxed);
         let tid = GetCurrentThreadId();
         if hook.is_null() {
@@ -154,6 +215,7 @@ pub fn start_input_hook() -> u32 {
         }
         // must unhook on the same thread that installed it
         UnhookWindowsHookEx(hook);
+        SPRINT_INTERRUPT.store(false, Ordering::Relaxed);
         if !key_hook.is_null() { UnhookWindowsHookEx(key_hook); }
         KEY_HOOK_INSTALLED.store(false, Ordering::Relaxed);
         HOOK_INSTALLED.store(false, Ordering::Relaxed);
